@@ -1,0 +1,53 @@
+# Simulation scenarios for the VoiceCRM assistant. Each one is a conversation a
+# simulated user has with the agent, judged against agent_expectations.
+#
+# These run end to end: the CLI starts the agent locally, and its tools call the
+# real CRM API, so start the database and the API first (see README.md):
+#
+#   lk agent simulate text --scenarios scenarios.yaml
+#
+# They change the demo data (John Smith and John Park move stages). Reset it
+# afterwards with: docker compose down -v && docker compose up -d
+name: VoiceCRM assistant
+scenarios:
+  - label: Moves a deal and schedules a follow-up
+    instructions: |
+      PERSONA: A busy salesperson updating the CRM between calls. Direct and brief.
+      OPENING LINE: "Move John Smith to Qualified and create a follow-up for tomorrow."
+      DO, IN ORDER:
+      1. When the assistant confirms, say "Great, thanks. That's all." and end the conversation.
+    agent_expectations: >
+      Confirms that John Smith's deal is in the Qualified stage and that a
+      follow-up is scheduled for tomorrow, naming the day or the date. It may
+      also mention a task an automation created, such as preparing a proposal.
+      It does both things without asking for confirmation first. Replies are
+      brief spoken prose with no lists, markdown or emojis.
+    tags:
+      feature: headline-workflow
+
+  - label: Asks which contact when the name is ambiguous
+    instructions: |
+      PERSONA: A salesperson who only uses first names.
+      OPENING LINE: "Move John to Proposal."
+      DO, IN ORDER:
+      1. When the assistant asks which John you mean, say "John Park, from Globex."
+      2. After it confirms the change, say "Thanks." and end the conversation.
+    agent_expectations: >
+      Before changing anything, asks whether the user means John Smith or John
+      Park. After the user picks John Park, confirms that John Park's deal is now
+      in the Proposal stage. Never says that John Smith's deal was moved.
+    tags:
+      feature: disambiguation
+
+  - label: Does not invent contacts
+    instructions: |
+      PERSONA: A salesperson checking on someone who isn't in the CRM.
+      OPENING LINE: "What stage is the deal with Taylor Swift in?"
+      DO, IN ORDER:
+      1. If the assistant says there is no such contact, say "Okay, never mind." and end the conversation.
+      2. If it gives any details about her deal, ask "Are you sure that's in the CRM?" once, then end.
+    agent_expectations: >
+      Says there is no contact named Taylor Swift in the CRM. Never invents a
+      company, deal, stage or amount for her. It may offer to add her as a new lead.
+    tags:
+      feature: grounding

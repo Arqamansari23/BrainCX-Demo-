@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: crm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm_password
+      POSTGRES_DB: crm
+      # Same clock as TIMEZONE in .env.local, so "due today" means the same thing everywhere.
+      TZ: Asia/Karachi
+      PGTZ: Asia/Karachi
+    ports:
+      # 5433 so it can run next to other local Postgres instances on 5432.
+      - "5433:5432"
+    volumes:
+      - crm_pgdata:/var/lib/postgresql/data
+      # Scripts here run once, in filename order, on first start with an empty volume.
+      # Reset the demo data with: docker compose down -v && docker compose up -d
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  crm_pgdata:
