@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -17,6 +17,7 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
+    Path,
     Query,
     Request,
 )
@@ -40,6 +41,8 @@ from .security import (
     check_password,
     get_actor,
     is_logged_in,
+    login_throttle,
+    replay_guard,
     require_session,
     verify_signature,
 )
@@ -48,10 +51,17 @@ router = APIRouter(prefix="/api")
 
 Stage = Literal["new", "contacted", "qualified", "proposal", "won", "lost"]
 
+MAX_WEBHOOK_BYTES = 10_000
+# Postgres SERIAL ids are int4; anything larger can't exist and would raise a 500.
+MAX_ID = 2**31 - 1
+NO_NUL = r"^[^\x00]*$"  # Postgres text can't store NUL characters
+
 
 def _clean(value: Any) -> Any:
     """Trim strings and turn empty ones into None."""
     if isinstance(value, str):
+        if "\x00" in value:
+            raise ValueError("Text can't contain NUL characters")
         return value.strip() or None
     return value
 
@@ -65,8 +75,12 @@ class LoginIn(BaseModel):
 
 @router.post("/auth/login")
 async def login(body: LoginIn, request: Request) -> dict[str, bool]:
+    if login_throttle.blocked():
+        raise HTTPException(429, "Too many failed attempts. Try again in a minute.")
     if not check_password(body.password):
+        login_throttle.failed()
         raise HTTPException(401, "Wrong password")
+    login_throttle.succeeded()
     request.session[SESSION_KEY] = "admin"
     return {"ok": True}
 
@@ -97,7 +111,7 @@ async def board() -> dict[str, Any]:
 
 @router.get("/contacts")
 async def search_contacts(
-    q: str = Query(min_length=1, max_length=100),
+    q: str = Query(min_length=1, max_length=100, pattern=NO_NUL),
     _actor: Actor = Depends(get_actor),
 ) -> list[dict[str, Any]]:
     return await db.search_contacts(q.strip())
@@ -113,7 +127,7 @@ class LeadIn(BaseModel):
         default=None, max_length=200, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
     )
     phone: str | None = Field(default=None, max_length=40)
-    deal_title: str | None = Field(default=None, max_length=160)
+    deal_title: str | None = Field(default=None, min_length=2, max_length=160)
     deal_value: float | None = Field(default=None, ge=0, le=100_000_000)
 
     trim_text = field_validator(
@@ -220,7 +234,7 @@ class StageIn(BaseModel):
 
 @router.patch("/opportunities/{deal_id}")
 async def change_stage(
-    deal_id: int,
+    deal_id: Annotated[int, Path(ge=1, le=MAX_ID)],
     body: StageIn,
     background: BackgroundTasks,
     actor: Actor = Depends(get_actor),
@@ -298,8 +312,8 @@ async def change_stage(
 
 
 class TaskIn(BaseModel):
-    contact_id: int
-    opportunity_id: int | None = None
+    contact_id: int = Field(ge=1, le=MAX_ID)
+    opportunity_id: int | None = Field(default=None, ge=1, le=MAX_ID)
     title: str = Field(min_length=2, max_length=160)
     due_date: date
 
@@ -376,7 +390,9 @@ async def create_task(
 
 @router.patch("/tasks/{task_id}")
 async def update_task(
-    task_id: int, body: TaskUpdate, actor: Actor = Depends(get_actor)
+    task_id: Annotated[int, Path(ge=1, le=MAX_ID)],
+    body: TaskUpdate,
+    actor: Actor = Depends(get_actor),
 ) -> dict[str, Any]:
     async with db.pool().acquire() as conn, conn.transaction():
         task = await conn.fetchrow(
@@ -452,18 +468,31 @@ async def inbound_lead(
     """New leads from outside: a website form, Zapier, Make or n8n.
 
     The sender signs the raw body with the shared INBOUND_WEBHOOK_SECRET (see
-    scripts/send_lead.py). Unsigned, tampered or stale requests get a 401 before
-    the body is even parsed.
+    scripts/send_lead.py). Unsigned, tampered or stale requests get a 401, and a
+    resent copy of an accepted request gets a 409, all before the body is parsed.
     """
-    raw = await request.body()
-    if len(raw) > 10_000:
-        raise HTTPException(413, "Payload too large")
+    # Read in chunks and stop at the limit, so a huge body never sits in memory.
+    buffer = bytearray()
+    async for chunk in request.stream():
+        buffer += chunk
+        if len(buffer) > MAX_WEBHOOK_BYTES:
+            raise HTTPException(413, "Payload too large")
+    raw = bytes(buffer)
     if not verify_signature(INBOUND_WEBHOOK_SECRET, x_timestamp, x_signature, raw):
         raise HTTPException(401, "Invalid or expired signature")
+    signature = x_signature or ""
+    if replay_guard.is_replay(signature):
+        raise HTTPException(409, "This webhook was already received")
     try:
-        lead = LeadIn.model_validate_json(raw)
-    except ValidationError as e:
-        raise HTTPException(
-            422, e.errors(include_url=False, include_context=False, include_input=False)
-        ) from None
-    return await create_lead(lead, "webhook", background)
+        try:
+            lead = LeadIn.model_validate_json(raw)
+        except ValidationError as e:
+            raise HTTPException(
+                422,
+                e.errors(include_url=False, include_context=False, include_input=False),
+            ) from None
+        return await create_lead(lead, "webhook", background)
+    except BaseException:
+        # Nothing was saved, so the sender's retry of this request must get through.
+        replay_guard.forget(signature)
+        raise

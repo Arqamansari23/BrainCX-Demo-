@@ -4,10 +4,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveEvent } from "./api";
 
-export function useLiveUpdates(onEvent: (event: LiveEvent) => void): boolean {
+export function useLiveUpdates(
+  onEvent: (event: LiveEvent) => void,
+  // Called when the server refuses the socket outright, which usually means the
+  // session has ended (logout in another tab, or the cookie expired).
+  onRefused?: () => void,
+): boolean {
   const [connected, setConnected] = useState(false);
-  const handler = useRef(onEvent);
-  handler.current = onEvent;
+  const handlers = useRef({ onEvent, onRefused });
+  handlers.current = { onEvent, onRefused };
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -16,19 +21,22 @@ export function useLiveUpdates(onEvent: (event: LiveEvent) => void): boolean {
     let attempt = 0;
 
     const open = () => {
+      let opened = false;
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       socket = new WebSocket(`${proto}//${location.host}/ws`);
       socket.onopen = () => {
+        opened = true;
         attempt = 0;
         setConnected(true);
       };
       socket.onmessage = (message) => {
         const data = JSON.parse(message.data);
-        if (data.type === "crm") handler.current(data as LiveEvent); // ignore pings
+        if (data.type === "crm") handlers.current.onEvent(data as LiveEvent); // ignore pings
       };
       socket.onclose = () => {
         setConnected(false);
         if (closed) return;
+        if (!opened) handlers.current.onRefused?.();
         // Back off up to 10s so a restarting API isn't hammered.
         retry = setTimeout(open, Math.min(1000 * 2 ** attempt++, 10000));
       };

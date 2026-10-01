@@ -1,17 +1,31 @@
-# Unit tests for the deterministic pieces: matching a spoken name to a contact,
-# and the HMAC signatures that protect the webhooks. No LLM, API or database needed.
+# Unit tests for the deterministic pieces: matching a spoken name to a contact and
+# a deal, the HMAC signatures that protect the webhooks, login throttling and replay
+# protection. No LLM, API or database needed.
 
 import time
 
 import pytest
 from livekit.agents.llm import ToolError
 
-from crm_api.security import sign, verify_signature
+from crm_api.security import LoginThrottle, ReplayGuard, sign, verify_signature
 from crm_client import pick_contact, pick_deal
 
-# Scores are the real pg_trgm values for these names (see db.search_contacts).
-JOHN_SMITH = {"id": 1, "full_name": "John Smith", "company": "Acme Corp", "score": 1.0}
-JOHN_PARK = {"id": 2, "full_name": "John Park", "company": "Globex", "score": 0.45}
+# "score" and "name_similarity" are the real pg_trgm values that
+# db.search_contacts returns for these queries (measured against the seed data).
+JOHN_SMITH = {
+    "id": 1,
+    "full_name": "John Smith",
+    "company": "Acme Corp",
+    "score": 1.0,
+    "name_similarity": 1.0,
+}
+JOHN_PARK = {
+    "id": 2,
+    "full_name": "John Park",
+    "company": "Globex",
+    "score": 0.45,
+    "name_similarity": 0.45,
+}
 
 
 def test_exact_name_wins_over_similar_names() -> None:
@@ -19,14 +33,51 @@ def test_exact_name_wins_over_similar_names() -> None:
 
 
 def test_misheard_name_still_matches_a_clear_winner() -> None:
-    hits = [{**JOHN_SMITH, "score": 0.62}, {**JOHN_PARK, "score": 0.2}]
+    hits = [
+        {**JOHN_SMITH, "score": 0.62, "name_similarity": 0.62},
+        {**JOHN_PARK, "score": 0.2, "name_similarity": 0.2},
+    ]
     assert pick_contact("Jon Smith", hits)["id"] == 1
+
+
+def test_shared_first_name_is_not_a_match() -> None:
+    # "James Wu" scores 0.67 against James Lee on the first name alone; the
+    # whole-name similarity is only 0.46, so it must not update James Lee.
+    james_lee = {
+        "id": 9,
+        "full_name": "James Lee",
+        "company": "Quantum Retail",
+        "score": 0.67,
+        "name_similarity": 0.46,
+    }
+    with pytest.raises(
+        ToolError, match=r"No contact is called 'James Wu'. The closest is James Lee"
+    ):
+        pick_contact("James Wu", [james_lee])
+
+
+def test_single_unique_first_name_matches() -> None:
+    priya = {
+        "id": 4,
+        "full_name": "Priya Patel",
+        "company": "Nimbus Health",
+        "score": 1.0,
+        "name_similarity": 0.45,
+    }
+    assert pick_contact("Priya", [priya])["id"] == 4
 
 
 def test_first_name_only_is_ambiguous() -> None:
     hits = [{**JOHN_PARK, "score": 1.0}, {**JOHN_SMITH, "score": 1.0}]
     with pytest.raises(ToolError, match="John Smith at Acme Corp"):
         pick_contact("John", hits)
+
+
+def test_namesakes_are_told_apart_by_company() -> None:
+    twin = {**JOHN_SMITH, "id": 10, "company": "Globex"}
+    with pytest.raises(ToolError, match="Several contacts are called John Smith"):
+        pick_contact("John Smith", [JOHN_SMITH, twin])
+    assert pick_contact("John Smith", [JOHN_SMITH, twin], company="globex")["id"] == 10
 
 
 def test_no_match_says_so() -> None:
@@ -56,6 +107,16 @@ def test_several_open_deals_need_a_title() -> None:
     with pytest.raises(ToolError, match="several deals"):
         pick_deal(contact)
     assert pick_deal(contact, "rollout")["id"] == 2
+    assert pick_deal(contact, "the rollout deal")["id"] == 2
+
+
+def test_named_deal_that_does_not_exist_never_moves_another() -> None:
+    contact = {
+        "full_name": "John Smith",
+        "deals": [{"id": 1, "title": "Acme CRM rollout", "stage": "contacted"}],
+    }
+    with pytest.raises(ToolError, match="no single deal matching 'Website redesign'"):
+        pick_deal(contact, "Website redesign")
 
 
 BODY = b'{"full_name": "Maria Rodriguez"}'
@@ -86,3 +147,37 @@ def test_stale_timestamp_is_rejected() -> None:
 
 def test_missing_headers_are_rejected() -> None:
     assert not verify_signature("secret", None, None, BODY)
+
+
+def test_login_is_blocked_after_repeated_failures() -> None:
+    throttle = LoginThrottle(max_failures=3, window_seconds=60)
+    for t in range(3):
+        assert not throttle.blocked(now=t)
+        throttle.failed(now=t)
+    assert throttle.blocked(now=10)
+
+
+def test_login_block_expires_and_success_resets() -> None:
+    throttle = LoginThrottle(max_failures=2, window_seconds=60)
+    throttle.failed(now=0)
+    throttle.failed(now=1)
+    assert throttle.blocked(now=30)
+    assert not throttle.blocked(now=100)  # window passed
+    throttle.failed(now=101)
+    throttle.succeeded()
+    assert not throttle.blocked(now=102)
+
+
+def test_resent_webhook_is_a_replay() -> None:
+    guard = ReplayGuard(ttl_seconds=600)
+    assert not guard.is_replay("sha256=abc", now=0)
+    assert guard.is_replay("sha256=abc", now=5)
+    assert not guard.is_replay("sha256=def", now=5)
+    assert not guard.is_replay("sha256=abc", now=700)  # forgotten after the TTL
+
+
+def test_failed_webhook_can_be_retried() -> None:
+    guard = ReplayGuard(ttl_seconds=600)
+    assert not guard.is_replay("sha256=abc", now=0)
+    guard.forget("sha256=abc")  # processing failed
+    assert not guard.is_replay("sha256=abc", now=1)

@@ -27,14 +27,21 @@ class Hub:
         self._clients.discard(ws)
 
     async def broadcast(self, message: dict[str, Any]) -> None:
-        dead: list[WebSocket] = []
-        for ws in list(self._clients):
-            try:
-                await ws.send_json(message)
-            except Exception:  # the tab went away mid-send
-                dead.append(ws)
-        for ws in dead:
-            self._clients.discard(ws)
+        # Routes await this before replying, so send to every tab at once and
+        # give each a short timeout: a stalled tab must not slow the voice agent.
+        clients = list(self._clients)
+        delivered = await asyncio.gather(*(self._send(ws, message) for ws in clients))
+        for ws, ok in zip(clients, delivered, strict=True):
+            if not ok:
+                self._clients.discard(ws)
+
+    @staticmethod
+    async def _send(ws: WebSocket, message: dict[str, Any]) -> bool:
+        try:
+            await asyncio.wait_for(ws.send_json(message), timeout=2)
+            return True
+        except Exception:  # the tab went away or stopped reading
+            return False
 
     def start(self) -> None:
         self._keepalive = asyncio.create_task(self._keep_alive())

@@ -45,6 +45,18 @@ def _calls(result: Any, name: str) -> list[dict[str, Any]]:
     ]
 
 
+# What lookup_contact returns for John Smith in the seed data.
+JOHN_SMITH = {
+    "contact": "John Smith",
+    "company": "Acme Corp",
+    "status": "lead",
+    "deals": [
+        {"id": 1, "title": "Acme CRM rollout", "stage": "contacted", "value": 24000}
+    ],
+    "open_tasks": [],
+}
+
+
 # Mocks get the tool's arguments by position, in the tool's own order (the
 # RunContext first), so these mirror the real signatures.
 def _moved(context: Any, contact_name: str, stage: str) -> dict[str, Any]:
@@ -76,7 +88,7 @@ async def test_moves_deal_and_creates_follow_up() -> None:
         with mock_tools(
             CRMAssistant,
             {
-                "lookup_contact": lambda: {"contact": "John Smith", "deals": []},
+                "lookup_contact": lambda: JOHN_SMITH,
                 "move_deal_stage": _moved,
                 "create_follow_up": _followed_up,
                 "create_lead": lambda: RuntimeError("must not create a lead"),
@@ -158,8 +170,9 @@ async def test_reports_failure_when_crm_is_down() -> None:
             .judge(
                 model,
                 intent=(
-                    "Tells the user the change could not be saved right now. Must NOT "
-                    "claim that the deal was moved."
+                    "Tells the user the CRM couldn't be reached, so the deal was not "
+                    "moved or nothing was saved. Saying the deal 'wasn't moved' is "
+                    "correct. It fails only if it says the move succeeded."
                 ),
             )
         )

@@ -94,20 +94,30 @@ receiver never delays the assistant's reply.
   - **The agent never guesses between similar names.** `pick_contact` accepts an exact name, or a strong match that
     is clearly ahead of the next one. Otherwise it returns the candidates and the agent asks: *"Which John do you
     mean, John Park at Globex or John Smith at Acme Corp?"*
+  - **A shared first name is not a match.** A full name has to be similar as a whole, so "James Wu" is never
+    treated as James Lee. The agent asks *"Did you mean James Lee, or should I add James Wu as a new lead?"*
+    Two contacts with the same name are told apart by company.
+  - **A named deal is never swapped for another.** If the user names a deal that doesn't exist, the agent lists
+    the contact's deals and asks.
   - **Relative dates are resolved against a calendar.** The prompt includes today's date and the next 14 days, so
     "tomorrow" or "next Friday" becomes a real date. The API also rejects dates in the past.
   - **Writes can't be cut off halfway.** Tools that change data call `disallow_interruptions()`, so speaking over the
     agent can't interrupt a write.
   - **Failures are reported, not hidden.** Errors come back as `ToolError`s with user-safe wording, so if the API is
-    down the agent says nothing was saved.
+    down the agent says nothing was saved. If a save times out, it says the change couldn't be confirmed and asks
+    you to check the board, rather than inviting a retry that could create a duplicate.
   - **Clear commands run straight away.** The prompt tells the agent to do every requested action in one turn,
-    confirm afterwards, and ask only when something is ambiguous.
+    confirm afterwards, and ask only when something is ambiguous. Three things get a quick yes first: moving a
+    deal to Won, moving a deal to Lost, and adding a lead. Won makes the contact a customer, all three notify
+    outside systems, and spoken names are easy to mishear.
 
 ## Security
 
 - **Secrets stay in the gitignored `.env.local`.** The API refuses to start if its secrets are missing.
 - **Browser login:** a shared password checked with `hmac.compare_digest`. It creates a signed, HttpOnly,
-  SameSite=Lax session cookie, so cross-site requests can't carry it.
+  SameSite=Lax session cookie, so cross-site requests can't carry it. After 10 wrong passwords within a minute,
+  every login gets 429 until the minute passes, which makes brute-forcing impractical. The count is global, not per
+  client address, because addresses can be spoofed with `X-Forwarded-For` and all look alike behind the dev proxy.
 - **Voice agent:** has its own API key (`X-API-Key`) and can only use the CRM endpoints. There are no delete
   endpoints at all.
 - **LiveKit tokens** are minted by the server, and only for a logged-in session.
@@ -115,16 +125,31 @@ receiver never delays the assistant's reply.
   - Tokens last 10 minutes and are valid for one fresh room.
   - The LiveKit secret never reaches the browser.
 - **Inbound webhooks** are checked with HMAC-SHA256 over `timestamp.body`, using a constant-time comparison.
-  Requests with a missing or wrong signature, or a timestamp more than 5 minutes off, are rejected before the body
-  is parsed. Bodies are capped at 10 KB.
+  Everything below happens before the body is parsed:
+  - a missing or wrong signature, or a timestamp more than 5 minutes off, gets 401;
+  - a resent copy of a request that was already processed gets 409 (replay protection). If processing failed, the
+    sender's retry still goes through;
+  - the body is read in chunks and cut off at 10 KB (413), so a huge upload never sits in memory.
 - **Outbound webhooks** are signed the same way, so receivers can verify they came from this CRM.
-- **The live-update WebSocket** requires the session cookie and only carries short summaries.
-- **Input handling:** all SQL is parameterised (asyncpg), request bodies are validated with Pydantic (types, lengths,
-  allowed stages), and the database adds CHECK constraints.
-- **CORS** is limited to the web app's origin.
+- **The live-update WebSocket** requires the session cookie and refuses pages from other origins, which stops
+  cross-site WebSocket hijacking. It only carries short summaries.
+- **The agent treats CRM data as data.** Leads can arrive from outside forms, so the prompt tells the agent never
+  to follow instructions found in names or deal titles (prompt-injection guard).
+- **Input handling:** all SQL is parameterised (asyncpg), and request bodies are validated with Pydantic (types,
+  lengths, allowed stages, IDs within the database's range, no NUL characters). Bad input gets a 422 or 404, never
+  a 500. The database adds CHECK constraints.
+- **Logs:** the webhook URL is kept out of the logs, and a webhook URL without a signing secret stops the API from
+  starting.
+- **Network exposure:** Postgres is published on `127.0.0.1` only, so the demo database isn't reachable from your
+  network. CORS is limited to the web app's origin.
 
-For production I would add per-user accounts with roles, rate limiting, idempotency keys on webhooks, HTTPS with
-`https_only` cookies, and secret rotation.
+For production I would add:
+- per-user accounts with roles;
+- rate limiting across the whole API (today only login is throttled);
+- a shared store such as Redis for the login throttle and replay cache, so they work across several API instances;
+- HTTPS with `https_only` cookies;
+- turning off the interactive API docs (`/docs`), which are open here for reviewers;
+- secret rotation.
 
 ## Run it locally
 
@@ -149,7 +174,7 @@ uv run src/agent.py dev                                    # or: lk agent dev
 cd web && npm install && npm run dev                       # http://localhost:5174
 ```
 
-Log in with `ADMIN_PASSWORD` (`crm-admin` in the demo setup) and click **Talk to assistant**.
+Log in with the `ADMIN_PASSWORD` you set in `.env.local` and click **Talk to assistant**.
 
 To reset the demo data: `docker compose down -v && docker compose up -d`.
 
@@ -171,27 +196,44 @@ To reset the demo data: `docker compose down -v && docker compose up -d`.
 ### Verifying a webhook signature (receiver side)
 
 ```python
-expected = "sha256=" + hmac.new(WEBHOOK_SECRET.encode(), f"{ts}.".encode() + raw_body, hashlib.sha256).hexdigest()
-valid = hmac.compare_digest(expected, request.headers["X-Signature"]) and abs(time.time() - int(ts)) < 300
+expected = (
+    "sha256="
+    + hmac.new(
+        WEBHOOK_SECRET.encode(), f"{ts}.".encode() + raw_body, hashlib.sha256
+    ).hexdigest()
+)
+valid = (
+    hmac.compare_digest(expected, request.headers["X-Signature"])
+    and abs(time.time() - int(ts)) < 300
+)
 ```
 
 ## Tests
 
 ```bash
-uv run pytest                                       # 14 tests, a few seconds
-lk agent simulate text --scenarios scenarios.yaml   # end to end; needs the DB and API running
+uv run pytest                                                     # 22 tests, a few seconds
+lk agent simulate text --scenarios scenarios.yaml --concurrency 2 # end to end; needs the DB and API running
 ```
+
+Reset the demo data before running the simulations (`docker compose down -v && docker compose up -d`), since they
+move John Smith's and John Park's deals.
 
 - **`tests/test_agent.py`:** turn-level tests using LiveKit's testing framework, with every tool mocked.
   - The headline command must call `move_deal_stage(stage="qualified")` and `create_follow_up(due_date=<tomorrow>)`.
   - An ambiguous "John" must get a clarifying question.
   - When the CRM is down, the agent must say nothing was saved.
-- **`tests/test_logic.py`:** unit tests for name matching, deal selection and webhook signatures (valid, tampered,
-  wrong secret, stale).
+- **`tests/test_logic.py`:** unit tests for name matching, deal selection, webhook signatures (valid, tampered,
+  wrong secret, stale), login throttling and webhook replay protection. They include the cases the review found:
+  a shared first name must not match, namesakes are told apart by company, and a named deal that doesn't exist must
+  not move another.
 - **`scenarios.yaml`:** LiveKit Agent Simulations. A simulated user talks to the real agent, whose tools call the real
-  API and database, and the transcripts are judged. The scenarios cover the headline command, the "which John?"
-  case, and not inventing a contact. All three pass. Text simulations have no audio, so they run the same agent,
-  prompt and tools on a text LLM.
+  API and database, and the transcripts are judged. The four scenarios cover:
+  - the headline command;
+  - the "which John?" case;
+  - not inventing a contact;
+  - never updating a different person who shares a first name ("James Wu" is not James Lee).
+
+  Text simulations have no audio, so they run the same agent, prompt and tools on a text LLM.
 
 ## Project layout
 
@@ -231,7 +273,7 @@ tests/, scenarios.yaml  tests and simulations
 ## What I'd do next
 
 - Per-user accounts and roles. Log the salesperson's identity with every voice action.
-- An outbox with retries and idempotency keys for webhooks, plus a scheduled job for overdue-task reminders.
+- An outbox with retries for outbound webhooks, plus a scheduled job for overdue-task reminders.
 - Phone access through LiveKit SIP, so reps can call in from the car.
 - Deploy: `lk agent deploy` for the agent, the API and web app on Render or Fly, and managed Postgres.
 - CI: run pytest, and run the simulations against a Postgres service container.

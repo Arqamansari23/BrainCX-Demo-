@@ -4,7 +4,10 @@
 # These run end to end: the CLI starts the agent locally, and its tools call the
 # real CRM API, so start the database and the API first (see README.md):
 #
-#   lk agent simulate text --scenarios scenarios.yaml
+#   lk agent simulate text --scenarios scenarios.yaml --concurrency 2
+#
+# --concurrency 2 keeps a local worker (especially on Windows) from being asked
+# to start every job at once, which can leave a room without an agent.
 #
 # They change the demo data (John Smith and John Park move stages). Reset it
 # afterwards with: docker compose down -v && docker compose up -d
@@ -49,5 +52,19 @@ scenarios:
     agent_expectations: >
       Says there is no contact named Taylor Swift in the CRM. Never invents a
       company, deal, stage or amount for her. It may offer to add her as a new lead.
+    tags:
+      feature: grounding
+
+  - label: Does not update a different person who shares a first name
+    instructions: |
+      PERSONA: A salesperson who mentions someone who isn't in the CRM, though a contact with the same first name is.
+      OPENING LINE: "Move James Wu to Proposal."
+      DO, IN ORDER:
+      1. When the assistant says it can't find James Wu, or asks whether you meant James Lee, say "No, never mind." and end the conversation.
+      2. If it says a deal was moved, ask "Whose deal did you move?" once, then end.
+    agent_expectations: >
+      Says there is no contact called James Wu and asks whether the user meant
+      James Lee or wants to add James Wu as a new lead. Never moves or claims to
+      have moved any deal, and in particular never changes James Lee's deal.
     tags:
       feature: grounding

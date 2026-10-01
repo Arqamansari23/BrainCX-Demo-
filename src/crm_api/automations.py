@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
@@ -135,7 +135,7 @@ def queue_webhook(
     if not WEBHOOK_URL:
         return
     background.add_task(deliver_webhook, event, data)
-    actions.append(f"sent the {event} webhook")
+    actions.append(f"triggered the {event} webhook")
 
 
 async def deliver_webhook(event: str, data: dict[str, Any]) -> None:
@@ -145,7 +145,11 @@ async def deliver_webhook(event: str, data: dict[str, Any]) -> None:
     outbox table.
     """
     body = json.dumps(
-        {"event": event, "occurred_at": datetime.now(UTC).isoformat(), "data": data},
+        {
+            "event": event,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "data": data,
+        },
         default=str,
     ).encode()
     timestamp = str(int(time.time()))
@@ -162,7 +166,7 @@ async def deliver_webhook(event: str, data: dict[str, Any]) -> None:
         outcome = f"delivered (HTTP {response.status_code})"
         if not response.is_success:
             outcome = f"rejected (HTTP {response.status_code})"
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
         logger.warning("webhook %s failed: %s", event, e)
         outcome = f"failed ({type(e).__name__})"
 

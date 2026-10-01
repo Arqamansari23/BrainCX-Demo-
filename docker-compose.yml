@@ -11,8 +11,9 @@ services:
       TZ: Asia/Karachi
       PGTZ: Asia/Karachi
     ports:
-      # 5433 so it can run next to other local Postgres instances on 5432.
-      - "5433:5432"
+      # Local machine only (not your network), on 5433 so it can run next to other
+      # Postgres instances on 5432.
+      - "127.0.0.1:5433:5432"
     volumes:
       - crm_pgdata:/var/lib/postgresql/data
       # Scripts here run once, in filename order, on first start with an empty volume.

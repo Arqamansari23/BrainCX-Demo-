@@ -9,16 +9,37 @@ export class ApiError extends Error {
   }
 }
 
+// The app registers one handler that shows the login screen. Every 401 (an expired
+// session, or a logout in another tab) goes through it, wherever it happens.
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
+
+export function notifyUnauthorized() {
+  unauthorizedHandler?.();
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null; // e.g. a plain-text "Internal Server Error"
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     credentials: "same-origin",
     headers: init.body ? { "Content-Type": "application/json" } : undefined,
     ...init,
   });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  const data = parseJson(await res.text());
   if (!res.ok) {
-    const detail = data?.detail;
+    // A wrong password at login is a 401 too, but it isn't a lost session.
+    if (res.status === 401 && path !== "/api/auth/login") notifyUnauthorized();
+    const detail = data && typeof data === "object" ? (data as { detail?: unknown }).detail : undefined;
     const message =
       typeof detail === "string"
         ? detail

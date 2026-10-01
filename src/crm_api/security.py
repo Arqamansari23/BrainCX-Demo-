@@ -35,6 +35,36 @@ def check_password(password: str) -> bool:
     return bool(ADMIN_PASSWORD) and _same(password, ADMIN_PASSWORD)
 
 
+class LoginThrottle:
+    """Caps password guessing: after max_failures wrong passwords within the window,
+    every login is refused until the window passes.
+
+    The count is global rather than per client. There is one shared password, and
+    client addresses can't be trusted here: they can be spoofed with
+    X-Forwarded-For, and behind the dev proxy every browser looks the same anyway.
+    It lives in memory in one process; a multi-instance deployment would use Redis.
+    """
+
+    def __init__(self, max_failures: int = 10, window_seconds: float = 60) -> None:
+        self.max_failures = max_failures
+        self.window_seconds = window_seconds
+        self._failures: list[float] = []
+
+    def blocked(self, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        self._failures = [t for t in self._failures if now - t < self.window_seconds]
+        return len(self._failures) >= self.max_failures
+
+    def failed(self, now: float | None = None) -> None:
+        self._failures.append(time.monotonic() if now is None else now)
+
+    def succeeded(self) -> None:
+        self._failures.clear()
+
+
+login_throttle = LoginThrottle()
+
+
 def is_logged_in(conn: HTTPConnection) -> bool:
     # Works for HTTP requests and WebSockets alike (SessionMiddleware covers both).
     return conn.session.get(SESSION_KEY) is not None
@@ -89,3 +119,33 @@ def verify_signature(
     ):
         return False
     return _same(sign(secret, timestamp, body), signature)
+
+
+class ReplayGuard:
+    """Remembers recently accepted signatures so a captured webhook can't be resent.
+
+    The timestamp check already rejects anything older than MAX_CLOCK_SKEW_SECONDS,
+    so signatures only need remembering for that long.
+    """
+
+    def __init__(self, ttl_seconds: float = 2 * MAX_CLOCK_SKEW_SECONDS) -> None:
+        self.ttl_seconds = ttl_seconds
+        self._seen: dict[str, float] = {}
+
+    def is_replay(self, signature: str, now: float | None = None) -> bool:
+        """True if seen recently; otherwise records it (so a parallel copy is refused)."""
+        now = time.time() if now is None else now
+        self._seen = {
+            s: at for s, at in self._seen.items() if now - at < self.ttl_seconds
+        }
+        if signature in self._seen:
+            return True
+        self._seen[signature] = now
+        return False
+
+    def forget(self, signature: str) -> None:
+        """Call when processing failed, so the sender's retry isn't refused."""
+        self._seen.pop(signature, None)
+
+
+replay_guard = ReplayGuard()

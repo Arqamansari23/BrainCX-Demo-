@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { ApiError, SOURCE_ICONS, api, type Board, type Deal, type LiveEvent, type Stage, type Task } from "./api";
+import {
+  ApiError,
+  SOURCE_ICONS,
+  api,
+  setUnauthorizedHandler,
+  type Board,
+  type Deal,
+  type LiveEvent,
+  type Stage,
+  type Task,
+} from "./api";
 import { PipelineBoard } from "./Board";
 import { Contacts, LeadForm } from "./Contacts";
 import { useLiveUpdates } from "./live";
@@ -8,6 +18,7 @@ import { VoicePanel } from "./VoicePanel";
 
 export default function App() {
   const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
+  const loggedOut = useCallback(() => setAuth("out"), []);
 
   useEffect(() => {
     api
@@ -16,9 +27,15 @@ export default function App() {
       .catch(() => setAuth("out"));
   }, []);
 
+  // Any 401 from the API means the session is gone: show the login screen.
+  useEffect(() => {
+    setUnauthorizedHandler(loggedOut);
+    return () => setUnauthorizedHandler(null);
+  }, [loggedOut]);
+
   if (auth === "checking") return <div className="splash">Loading…</div>;
   if (auth === "out") return <Login onLoggedIn={() => setAuth("in")} />;
-  return <Crm onLoggedOut={() => setAuth("out")} />;
+  return <Crm onLoggedOut={loggedOut} />;
 }
 
 function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
@@ -69,16 +86,24 @@ function Crm({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [flash, setFlash] = useState<Set<number>>(new Set());
   const refreshTimer = useRef<ReturnType<typeof setTimeout>>();
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    // Loads can finish out of order; only the newest one may update the board.
+    const seq = ++loadSeq.current;
     try {
-      setBoard(await api.get<Board>("/api/board"));
+      const data = await api.get<Board>("/api/board");
+      if (seq !== loadSeq.current) return;
+      setBoard(data);
       setError(null);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) onLoggedOut();
-      else setError(err instanceof Error ? err.message : "Could not load the CRM");
+      if (seq !== loadSeq.current) return;
+      // A 401 already switched to the login screen (see setUnauthorizedHandler).
+      if (!(err instanceof ApiError && err.status === 401)) {
+        setError(err instanceof Error ? err.message : "Could not load the CRM");
+      }
     }
-  }, [onLoggedOut]);
+  }, []);
 
   // Several events can arrive together (a stage change plus its automations),
   // so refetch once after they settle.
@@ -86,6 +111,16 @@ function Crm({ onLoggedOut }: { onLoggedOut: () => void }) {
     clearTimeout(refreshTimer.current);
     refreshTimer.current = setTimeout(load, 150);
   }, [load]);
+
+  // If the server refuses the socket, check whether the session is still valid.
+  const checkSession = useCallback(() => {
+    api
+      .get<{ logged_in: boolean }>("/api/auth/me")
+      .then((r) => {
+        if (!r.logged_in) onLoggedOut();
+      })
+      .catch(() => {}); // API down: keep retrying quietly
+  }, [onLoggedOut]);
 
   const connected = useLiveUpdates((event) => {
     refresh();
@@ -105,7 +140,7 @@ function Crm({ onLoggedOut }: { onLoggedOut: () => void }) {
         3000,
       );
     }
-  });
+  }, checkSession);
 
   // Load on start, and catch up on anything missed whenever the socket (re)connects.
   useEffect(() => {
@@ -115,12 +150,18 @@ function Crm({ onLoggedOut }: { onLoggedOut: () => void }) {
     if (connected) refresh();
   }, [connected, refresh]);
 
-  // The live event that follows each change refreshes the board.
-  const run = async (action: () => Promise<unknown>) => {
+  // Refresh after our own changes too, so the board is right even while the live
+  // socket is reconnecting. The debounce merges this with the live event.
+  const run = async (action: () => Promise<unknown>): Promise<boolean> => {
     try {
       await action();
+      refresh();
+      return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      if (!(err instanceof ApiError && err.status === 401)) {
+        setError(err instanceof Error ? err.message : "Something went wrong");
+      }
+      return false;
     }
   };
   const changeStage = (deal: Deal, stage: Stage) =>
@@ -128,7 +169,11 @@ function Crm({ onLoggedOut }: { onLoggedOut: () => void }) {
   const completeTask = (task: Task) => run(() => api.patch(`/api/tasks/${task.id}`, { done: true }));
 
   const logout = async () => {
-    await api.post("/api/auth/logout");
+    try {
+      await api.post("/api/auth/logout");
+    } catch {
+      // Show the login screen anyway; the cookie expires on its own.
+    }
     onLoggedOut();
   };
 
@@ -166,7 +211,14 @@ function Crm({ onLoggedOut }: { onLoggedOut: () => void }) {
 
       <main className="layout">
         <section className="main">
-          {showLeadForm && <LeadForm onDone={() => setShowLeadForm(false)} />}
+          {showLeadForm && (
+            <LeadForm
+              onDone={() => {
+                setShowLeadForm(false);
+                refresh();
+              }}
+            />
+          )}
           {!board ? (
             <p className="muted">Loading…</p>
           ) : tab === "pipeline" ? (

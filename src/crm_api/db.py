@@ -24,7 +24,13 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
 async def connect() -> None:
     global _pool
     _pool = await asyncpg.create_pool(
-        DATABASE_URL, min_size=1, max_size=10, command_timeout=10, init=_init_connection
+        # Queries here take milliseconds; give up well before the agent's 8 s HTTP timeout
+        # so it never reports "not saved" for a write that still commits later.
+        DATABASE_URL,
+        min_size=1,
+        max_size=10,
+        command_timeout=5,
+        init=_init_connection,
     )
 
 
@@ -137,6 +143,9 @@ async def search_contacts(query: str) -> list[dict[str, Any]]:
                    GREATEST(similarity(c.full_name, $1),
                             word_similarity($1, c.full_name),
                             word_similarity($1, COALESCE(c.company, '')))::float8 AS score,
+                   -- Whole-name similarity: a full name must match as a whole, so
+                   -- "James Wu" doesn't become James Lee just because the first names match.
+                   similarity(c.full_name, $1)::float8 AS name_similarity,
                    COALESCE((SELECT json_agg(json_build_object(
                                  'id', o.id, 'title', o.title, 'stage', o.stage,
                                  'value', o.value::float8) ORDER BY o.id)

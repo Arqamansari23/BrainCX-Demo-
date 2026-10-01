@@ -16,6 +16,8 @@ from .routes import router
 from .security import is_logged_in
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs every request URL at INFO, and WEBHOOK_URL can work like a secret.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -58,8 +60,12 @@ app.include_router(router)
 @app.websocket("/ws")
 async def live_updates(ws: WebSocket) -> None:
     """Pushes a small {type, actor, summary} message whenever the CRM changes."""
-    if not is_logged_in(ws):
-        await ws.close(code=1008)  # policy violation: log in first
+    # Browsers always send Origin on WebSockets and attach cookies even across
+    # sites, so a foreign origin is refused: another page can't ride the session
+    # (cross-site WebSocket hijacking).
+    origin = ws.headers.get("origin")
+    if not is_logged_in(ws) or (origin is not None and origin not in ALLOWED_ORIGINS):
+        await ws.close(code=1008)  # policy violation
         return
     await hub.join(ws)
     try:

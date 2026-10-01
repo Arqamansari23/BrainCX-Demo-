@@ -545,8 +545,11 @@ tbody tr:last-child td {
 .voice {
   display: grid;
   gap: 8px;
-  /* keep our own look inside the LiveKit theme scope */
+  /* Keep the app's look inside the LiveKit theme scope, which otherwise sets its
+     own font size and a forced dark color scheme. */
   font-family: inherit;
+  font-size: 14px;
+  color-scheme: light dark;
   background: transparent;
 }
 .btn.talk {
@@ -597,13 +600,16 @@ tbody tr:last-child td {
 .state-failed {
   background: var(--danger);
 }
-.voice-viz {
+/* LiveKit paints the visualizer with --lk-bg (near-black in its default theme);
+   blend it into the card instead. Idle bars use --lk-va-bar-bg, speaking bars --lk-fg. */
+.voice .voice-viz {
   height: 56px;
   width: 100%;
+  background: transparent;
   --lk-va-bar-width: 14px;
   --lk-va-bar-gap: 6px;
   --lk-fg: var(--voice);
-  --lk-va-bg: var(--surface-2);
+  --lk-va-bar-bg: var(--surface-2);
 }
 .transcript {
   list-style: none;
@@ -643,6 +649,10 @@ tbody tr:last-child td {
   .layout {
     grid-template-columns: minmax(0, 1fr);
     padding: 14px 16px 24px;
+  }
+  /* One column: keep the Talk button and follow-ups above the board. */
+  .side {
+    order: -1;
   }
 }
 @media (max-width: 600px) {

@@ -94,7 +94,7 @@ export function LeadForm({ onDone }: { onDone: () => void }) {
         </label>
         <label>
           Value (USD)
-          <input type="number" min={0} step={100} value={form.deal_value} onChange={set("deal_value")} />
+          <input type="number" min={0} step="any" value={form.deal_value} onChange={set("deal_value")} />
         </label>
       </div>
       {error && <p className="error-text">{error}</p>}

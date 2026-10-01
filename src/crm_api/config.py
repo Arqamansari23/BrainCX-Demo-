@@ -38,6 +38,9 @@ REQUIRED = {
     "SESSION_SECRET": SESSION_SECRET,
     "AGENT_API_KEY": AGENT_API_KEY,
 }
+if WEBHOOK_URL:
+    # Never send events signed with an empty key.
+    REQUIRED["WEBHOOK_SECRET"] = WEBHOOK_SECRET
 
 
 @cache

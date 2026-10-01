@@ -16,6 +16,9 @@ export function SidePanel({ board, onComplete }: { board: Board; onComplete: (ta
               <li key={task.id} className={`task ${when}`}>
                 <input
                   type="checkbox"
+                  // Stays unticked until the refreshed list drops the task, so a
+                  // failed save never leaves a ticked box on an open task.
+                  checked={false}
                   onChange={() => onComplete(task)}
                   aria-label={`Mark "${task.title}" done`}
                 />

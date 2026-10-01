@@ -16,7 +16,8 @@ import {
   type AgentState,
 } from "@livekit/components-react";
 import { TokenSource, Track } from "livekit-client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api, notifyUnauthorized } from "./api";
 
 // Module scope so the token source (and its token cache) survives re-renders.
 const tokenSource = TokenSource.endpoint("/api/livekit/token");
@@ -37,26 +38,48 @@ export function VoicePanel() {
   const session = useSession(tokenSource, { agentName: "crm-agent" });
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // start() waits for the agent and never settles if it doesn't join, so End
+  // aborts it through this controller.
+  const startAbort = useRef<AbortController | null>(null);
 
   const start = async () => {
     setError(null);
     setStarting(true);
+    const controller = new AbortController();
+    startAbort.current = controller;
     try {
       // Fetches a token, joins the room, turns on the mic and waits for the agent.
-      await session.start();
+      await session.start({ signal: controller.signal });
     } catch (err) {
+      if (controller.signal.aborted) return; // the user pressed End
+      // The token request fails with a 401 if the session expired.
+      const me = await api.get<{ logged_in: boolean }>("/api/auth/me").catch(() => null);
+      if (me && !me.logged_in) {
+        notifyUnauthorized();
+        return;
+      }
       setError(err instanceof Error ? err.message : "Could not start the voice session");
       await session.end();
     } finally {
-      setStarting(false);
+      if (startAbort.current === controller) {
+        startAbort.current = null;
+        setStarting(false);
+      }
     }
+  };
+
+  const end = async () => {
+    startAbort.current?.abort();
+    startAbort.current = null;
+    setStarting(false);
+    await session.end();
   };
 
   return (
     <SessionProvider session={session}>
       <div className="voice" data-lk-theme="default">
         {session.isConnected || starting ? (
-          <VoiceSession onEnd={() => session.end()} />
+          <VoiceSession onEnd={end} />
         ) : (
           <button className="btn talk" onClick={start}>
             🎙️ Talk to assistant
@@ -73,6 +96,12 @@ function VoiceSession({ onEnd }: { onEnd: () => void }) {
   const agent = useAgent();
   const { messages } = useSessionMessages();
   const recent = messages.slice(-4);
+  const transcript = useRef<HTMLUListElement>(null);
+
+  // Keep the newest line in view as replies stream in.
+  useEffect(() => {
+    transcript.current?.scrollTo({ top: transcript.current.scrollHeight });
+  });
 
   return (
     <div className="voice-card">
@@ -81,7 +110,7 @@ function VoiceSession({ onEnd }: { onEnd: () => void }) {
         {STATE_TEXT[agent.state] ?? agent.state}
       </div>
       <BarVisualizer className="voice-viz" track={agent.microphoneTrack} state={agent.state} barCount={7} />
-      <ul className="transcript">
+      <ul className="transcript" ref={transcript}>
         {recent.length === 0 && <li className="muted">Try: “Move John Smith to Qualified and create a follow-up for tomorrow.”</li>}
         {recent.map((m) => (
           <li key={m.id} className={m.type === "userTranscript" ? "you" : "assistant"}>
@@ -96,7 +125,7 @@ function VoiceSession({ onEnd }: { onEnd: () => void }) {
         </p>
       )}
       <div className="voice-actions">
-        <TrackToggle source={Track.Source.Microphone} />
+        <TrackToggle source={Track.Source.Microphone} aria-label="Microphone on or off" />
         <button className="btn danger" onClick={onEnd}>
           End
         </button>
