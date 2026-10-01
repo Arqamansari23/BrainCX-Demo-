@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import os
 import textwrap
 from datetime import timedelta
 from typing import Any, Literal
@@ -9,12 +11,14 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    APIConnectOptions,
     JobContext,
     RunContext,
     TurnHandlingOptions,
     cli,
     function_tool,
     inference,
+    llm,
 )
 from livekit.agents.llm import ToolError
 from livekit.agents.simulation import SimulationMode
@@ -226,6 +230,23 @@ class CRMAssistant(Agent):
 server = AgentServer()
 
 
+PRIMARY_MODEL = "gemini-3.1-flash-live-preview"
+FALLBACK_MODEL = "gemini-2.5-flash-native-audio-latest"
+
+
+def gemini_live(model: str, *, max_retry: int = 3) -> google.realtime.RealtimeModel:
+    # See https://docs.livekit.io/agents/models/realtime/plugins/gemini/
+    return google.realtime.RealtimeModel(
+        model=model,
+        voice="Enceladus",
+        language="en-US",
+        # Gemini streams its private reasoning as transcript by default, which
+        # makes the agent read its own plan out loud.
+        thinking_config=types.ThinkingConfig(include_thoughts=False),
+        conn_options=APIConnectOptions(max_retry=max_retry),
+    )
+
+
 def create_session(ctx: JobContext) -> AgentSession:
     sim = ctx.simulation_context()
     if sim is not None and sim.simulation_mode == SimulationMode.SIMULATION_MODE_TEXT:
@@ -236,14 +257,17 @@ def create_session(ctx: JobContext) -> AgentSession:
         return AgentSession(llm=inference.LLM(model="openai/gpt-4.1-mini"))
     return AgentSession(
         # Gemini Live handles speech in and out, so there is no STT or TTS to configure.
-        # See https://docs.livekit.io/agents/models/realtime/plugins/gemini/
-        llm=google.realtime.RealtimeModel(
-            model="gemini-3.1-flash-live-preview",
-            voice="Enceladus",
-            language="en-US",
-            # Gemini streams its private reasoning as transcript by default, which
-            # makes the agent read its own plan out loud.
-            thinking_config=types.ThinkingConfig(include_thoughts=False),
+        # The 3.1 preview sometimes drops a live session with "1011 Internal error"
+        # (a Google-side failure). LiveKit's fallback adapter then moves the call to
+        # a backup Gemini model, replaying the conversation so far.
+        # See https://docs.livekit.io/agents/logic/fallback-strategies/
+        llm=llm.RealtimeModelFallbackAdapter(
+            [
+                # No retries on the primary: its reconnects succeed and then fail again
+                # on the next turn, which would cost the user every turn. Fail over instead.
+                gemini_live(os.getenv("GEMINI_LIVE_MODEL", PRIMARY_MODEL), max_retry=0),
+                gemini_live(os.getenv("GEMINI_LIVE_FALLBACK_MODEL", FALLBACK_MODEL)),
+            ]
         ),
         turn_handling=TurnHandlingOptions(
             # Gemini Live decides turns on its own signals; LiveKit's turn detector
@@ -262,13 +286,33 @@ async def crm_agent(ctx: JobContext) -> None:
     await session.start(agent=CRMAssistant(), room=ctx.room)
     await ctx.connect()
 
-    # Greet first. Gemini's session may still be connecting and the plugin allows the
-    # first reply only a few seconds, so retry rather than opening in silence.
+    # Greet first, and retry rather than open in silence. A greeting can be lost three ways:
+    # Gemini is still connecting (the plugin allows the first reply only a few seconds),
+    # it never gets going, or the primary model fails and the switch to the fallback
+    # cuts it off before the user has heard anything.
     for attempt in range(1, 4):
-        handle = await session.generate_reply(instructions=GREETING)
-        if handle.exception() is None:
-            break
-        logger.warning("greeting attempt %d failed: %s", attempt, handle.exception())
+        handle = session.generate_reply(instructions=GREETING)
+        try:
+            await asyncio.wait_for(handle.wait_for_playout(), timeout=15)
+        except TimeoutError:
+            handle.interrupt(force=True)
+            logger.warning("greeting attempt %d timed out", attempt)
+            continue
+        if handle.exception() is not None:
+            logger.warning(
+                "greeting attempt %d failed: %s", attempt, handle.exception()
+            )
+            continue
+        if handle.interrupted and not _user_has_spoken(session):
+            logger.warning("greeting attempt %d was cut off; retrying", attempt)
+            await asyncio.sleep(1)  # let the fallback session finish connecting
+            continue
+        break
+
+
+def _user_has_spoken(session: AgentSession) -> bool:
+    # If the user interrupted the greeting by talking, don't greet them again.
+    return any(getattr(item, "role", None) == "user" for item in session.history.items)
 
 
 if __name__ == "__main__":

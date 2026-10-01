@@ -83,6 +83,10 @@ receiver never delays the assistant's reply.
 - Built on LiveKit Agents (Python) from LiveKit's `agent-starter-python` template.
 - Uses **Gemini Live** (`gemini-3.1-flash-live-preview`) as a single speech-to-speech model, so there is no separate
   speech-to-text or text-to-speech step.
+- **Survives Gemini outages.** The 3.1 preview sometimes drops a live session with `1011 Internal error encountered`,
+  a failure on Google's side. LiveKit's `RealtimeModelFallbackAdapter` then moves the call to
+  `gemini-2.5-flash-native-audio-latest`, replaying the conversation so far, and the agent keeps going. Both models
+  can be changed in `.env.local` (`GEMINI_LIVE_MODEL`, `GEMINI_LIVE_FALLBACK_MODEL`).
 - Tools in `src/agent.py`:
   - `move_deal_stage`
   - `create_follow_up`

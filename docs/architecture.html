@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoiceCRM Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one reading column; diagrams and the component grid run wider. Petrol-blue accent on cool neutrals. */
+  :root {
+    --bg: #f5f7f9;
+    --surface: #ffffff;
+    --ink: #16202a;
+    --muted: #586472;
+    --line: #d8dee5;
+    --accent: #0a6a86;
+    --accent-soft: #e0eff4;
+    --code-bg: #eef2f5;
+    --code-ink: #1d2a36;
+    --font-display: "Archivo", "Segoe UI", system-ui, sans-serif;
+    --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e1418; --surface: #151d23; --ink: #e5ebf0; --muted: #96a3af; --line: #26323b;
+      --accent: #5bc0dc; --accent-soft: #12313c; --code-bg: #111a20; --code-ink: #d6e1ea;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1418; --surface: #151d23; --ink: #e5ebf0; --muted: #96a3af; --line: #26323b;
+    --accent: #5bc0dc; --accent-soft: #12313c; --code-bg: #111a20; --code-ink: #d6e1ea;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.6 var(--font-body);
+    padding-inline: 16px;
+    padding-block: 32px 64px;
+  }
+  .wrap { max-width: 1120px; margin-inline: auto; display: grid; gap: 48px; }
+  h1, h2, h3 { font-family: var(--font-display); line-height: 1.15; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(28px, 5vw, 40px); letter-spacing: -0.01em; }
+  h2 { font-size: 24px; }
+  h3 { font-size: 18px; }
+  p { margin: 0; max-width: 68ch; }
+  .muted { color: var(--muted); }
+  code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+  :not(pre) > code { background: var(--code-bg); color: var(--code-ink); padding: 1px 5px; border-radius: 4px; }
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- header ---------- */
+  header { display: grid; gap: 14px; }
+  .eyebrow { font: 600 12px/1 var(--font-body); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+  .example {
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    background: var(--accent-soft);
+    max-width: 68ch;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .chip {
+    display: inline-flex; align-items: baseline; gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .chip b { font-family: var(--font-mono); color: var(--accent); font-weight: 500; }
+  .chip span { color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+
+  /* ---------- sections ---------- */
+  section { display: grid; gap: 16px; min-width: 0; }
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 20px;
+    overflow-x: auto;
+  }
+  .diagram pre.mermaid { margin: 0; background: transparent; text-align: center; }
+
+  ol.steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; counter-reset: step; }
+  ol.steps li {
+    display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: baseline;
+    max-width: 92ch;
+  }
+  ol.steps li::before {
+    counter-increment: step;
+    content: counter(step);
+    display: inline-grid; place-items: center;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent); color: var(--surface);
+    font: 600 13px/1 var(--font-mono);
+  }
+  ol.steps li > div { min-width: 0; }
+
+  /* ---------- component cards ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 500px), 1fr)); gap: 20px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 20px;
+    display: grid; gap: 12px; align-content: start;
+    min-width: 0;
+  }
+  .card-head { display: flex; align-items: center; gap: 12px; }
+  .num {
+    flex: none; width: 32px; height: 32px; border-radius: 6px;
+    display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent);
+    font: 700 16px/1 var(--font-display);
+  }
+  dl.facts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 14px; }
+  dl.facts dt { color: var(--muted); }
+  dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .files { display: flex; flex-wrap: wrap; gap: 6px; }
+  .file {
+    font-family: var(--font-mono); font-size: 12px;
+    padding: 2px 8px; border-radius: 4px;
+    background: var(--code-bg); color: var(--code-ink);
+    border: 1px solid var(--line);
+  }
+  pre.code {
+    margin: 0;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    font: 12.5px/1.55 var(--font-mono);
+    tab-size: 4;
+  }
+  .note { font-size: 14px; color: var(--muted); }
+  .sub { display: grid; gap: 8px; }
+  .sub h4 { margin: 4px 0 0; font: 600 14px/1.3 var(--font-body); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  .table-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">System architecture</span>
+  <h1>VoiceCRM Architecture</h1>
+  <p class="muted">A small CRM you can update by voice. Seven parts work together. The browser talks, LiveKit carries the audio, a Gemini-powered agent decides what to do, and the CRM API saves it, runs automations and tells everyone else.</p>
+  <p class="example"><strong>Example used on this page:</strong> the sales rep clicks <em>Talk to assistant</em> and says <em>“Move John Smith to Qualified and create a follow-up for tomorrow.”</em></p>
+  <div class="chips" aria-label="Components and where they run">
+    <span class="chip"><b>1</b> Website CRM <span>localhost:5174</span></span>
+    <span class="chip"><b>2</b> LiveKit room <span>wss :443</span></span>
+    <span class="chip"><b>3</b> Agent + Gemini 3.1 Live <span>outbound wss :443</span></span>
+    <span class="chip"><b>4</b> CRM API <span>localhost:8001</span></span>
+    <span class="chip"><b>5</b> Automations <span>inside :8001</span></span>
+    <span class="chip"><b>6</b> PostgreSQL <span>127.0.0.1:5433</span></span>
+    <span class="chip"><b>7</b> Webhooks &amp; live refresh <span>/ws · n8n</span></span>
+  </div>
+</header>
+
+<section aria-labelledby="arch">
+  <h2 id="arch">The architecture</h2>
+  <p class="muted">The numbers on the arrows are the order things happen in the example. Numbers inside the boxes are the component numbers used on the rest of this page.</p>
+  <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  REP(("Sales rep"))
+
+  subgraph PC["Your computer"]
+    WEB["1 · Website CRM<br>React 18 + Vite + LiveKit components<br>localhost:5174"]
+    API["4 · CRM API<br>Python FastAPI + uvicorn<br>localhost:8001"]
+    AUTO["5 · Automations<br>stage playbook · lead intake<br>runs inside the API (:8001)"]
+    DB[("6 · Database<br>PostgreSQL 17 in Docker<br>127.0.0.1:5433")]
+    AGENT["3 · Voice agent<br>LiveKit Agents (Python)<br>worker crm-agent · 4 tools"]
+  end
+
+  subgraph CLOUD["Cloud"]
+    LK["2 · LiveKit room<br>LiveKit Cloud<br>wss://your-project.livekit.cloud"]
+    GEM["Gemini 3.1 Live<br>the agent's brain · Google wss :443<br>fallback: Gemini 2.5"]
+    N8N["7 · Webhook receiver<br>n8n / Zapier · WEBHOOK_URL"]
+  end
+
+  REP -- "clicks Talk and speaks" --> WEB
+  WEB -- "① POST /api/livekit/token" --> API
+  WEB -- "② join room · mic audio over WebRTC" --> LK
+  LK -- "③ dispatch crm-agent · audio" --> AGENT
+  AGENT -- "④ audio stream" --> GEM
+  AGENT -- "⑤ tool call · HTTP + X-API-Key" --> API
+  API -- "⑥ same transaction" --> AUTO
+  API -- "⑦ SQL" --> DB
+  AUTO -- "⑦ automatic tasks" --> DB
+  API -- "⑧ WebSocket /ws · refresh board" --> WEB
+  AUTO -- "⑨ signed webhook · email via n8n" --> N8N
+  N8N -. "inbound lead (signed)" .-> API
+  AGENT -- "⑩ spoken reply" --> LK
+</pre>
+  </div>
+
+  <ol class="steps">
+    <li><div><strong>Get a ticket.</strong> The Talk button asks the CRM API for a LiveKit token (<code>POST /api/livekit/token</code>). The API checks the login cookie and returns a 10-minute token for a brand-new room <code>crm-…</code>. The token also says “send the agent named <code>crm-agent</code>”.</div></li>
+    <li><div><strong>Join the room.</strong> The browser connects to LiveKit Cloud with that token. Signalling uses a secure WebSocket on port 443, and the microphone audio flows as encrypted WebRTC packets over UDP, the same technology video calls use.</div></li>
+    <li><div><strong>The agent joins.</strong> LiveKit gives the job to the worker registered as <code>crm-agent</code>, our voice agent, which has been waiting since you started it. It joins the room and starts hearing you.</div></li>
+    <li><div><strong>Understand.</strong> The agent streams your voice to Gemini 3.1 Live. Gemini hears two requests and asks for two tools: <code>move_deal_stage</code> and <code>create_follow_up</code>.</div></li>
+    <li><div><strong>Act.</strong> Each tool is an HTTP call to the CRM API with the agent's secret key, for example <code>PATCH /api/opportunities/1 {"stage": "qualified"}</code>.</div></li>
+    <li><div><strong>Automate.</strong> In the same database transaction, the API runs the Qualified rule, which creates a “Prepare proposal” task due in 2 days.</div></li>
+    <li><div><strong>Save.</strong> Everything is written to PostgreSQL: the new stage, the tasks, and an activity row saying who did it (<code>voice</code>).</div></li>
+    <li><div><strong>Refresh.</strong> The API pushes a short message over the WebSocket <code>/ws</code>. The board reloads, John's card moves to Qualified, and a toast appears.</div></li>
+    <li><div><strong>Notify.</strong> After replying, the API sends a signed <code>opportunity.stage_changed</code> webhook to <code>WEBHOOK_URL</code>. An n8n workflow there could, for example, email the client.</div></li>
+    <li><div><strong>Answer.</strong> Gemini's spoken reply goes from the agent through LiveKit to your speakers: <em>“Done, John Smith's Acme CRM rollout deal is now in Qualified, with a follow-up call for Friday. The pipeline automation also added a Prepare proposal task for Saturday.”</em></div></li>
+  </ol>
+</section>
+
+<section aria-labelledby="trace">
+  <h2 id="trace">One full user trace</h2>
+  <p class="muted">The same example, message by message, from the click to the spoken answer. It takes about two seconds.</p>
+  <div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor REP as Sales rep
+  participant WEB as 1 Website (5174)
+  participant API as 4 CRM API (8001)
+  participant LK as 2 LiveKit room
+  participant AG as 3 Voice agent
+  participant GM as Gemini 3.1 Live
+  participant DB as 6 Postgres (5433)
+  participant N8N as 7 n8n webhook
+
+  REP->>WEB: clicks Talk to assistant
+  WEB->>API: POST /api/livekit/token (session cookie)
+  API-->>WEB: token for room crm-3f9a1c2e, dispatch crm-agent, valid 10 min
+  WEB->>LK: join room, publish microphone (WebRTC)
+  LK->>AG: job, join room crm-3f9a1c2e
+  AG->>LK: joins and subscribes to the microphone
+  AG-->>REP: "Hello, I'm your CRM assistant" (via LiveKit)
+  REP->>LK: "Move John Smith to Qualified and create a follow-up for tomorrow"
+  LK->>AG: audio packets
+  AG->>GM: audio stream
+  GM-->>AG: call move_deal_stage and create_follow_up
+  AG->>API: GET /api/contacts?q=John Smith (X-API-Key)
+  API-->>AG: John Smith, deal 1 Acme CRM rollout, stage contacted
+  AG->>API: PATCH /api/opportunities/1 stage=qualified
+  API->>DB: BEGIN, update stage, log activity, automation adds Prepare proposal, COMMIT
+  API-->>WEB: WebSocket /ws, John Smith moved to Qualified, board refreshes
+  API--)N8N: signed opportunity.stage_changed
+  AG->>API: POST /api/tasks Follow-up call due 2026-10-02
+  API->>DB: insert task and activity
+  API-->>WEB: WebSocket /ws, new task, board refreshes
+  AG->>GM: tool results
+  GM-->>AG: spoken answer
+  AG->>LK: voice and transcript
+  LK-->>REP: "Done, John Smith's deal is now in Qualified..."
+</pre>
+  </div>
+</section>
+
+<section aria-labelledby="parts">
+  <h2 id="parts">The seven components</h2>
+  <div class="grid">
+
+    <!-- 1 -->
+    <article class="card">
+      <div class="card-head"><span class="num">1</span><h3>Website CRM</h3></div>
+      <dl class="facts">
+        <dt>Tech</dt><dd>React 18, TypeScript, Vite 5, LiveKit React components</dd>
+        <dt>Runs at</dt><dd><code>http://localhost:5174</code> (Vite dev server, which forwards <code>/api</code> and <code>/ws</code> to port 8001)</dd>
+        <dt>Does</dt><dd>Login, pipeline board, contacts, follow-ups, activity feed, and the Talk to assistant panel</dd>
+      </dl>
+      <div class="files"><span class="file">web/src/App.tsx</span><span class="file">web/src/VoicePanel.tsx</span><span class="file">web/src/live.tsx</span><span class="file">web/vite.config.ts</span></div>
+      <p class="note">The Talk panel uses LiveKit's Session API. It fetches the token from <em>our</em> API, so the browser never holds a LiveKit secret.</p>
+<pre class="code">// web/src/VoicePanel.tsx (shortened)
+const tokenSource = TokenSource.endpoint("/api/livekit/token");
+
+const session = useSession(tokenSource, { agentName: "crm-agent" });
+
+&lt;button onClick={() =&gt; session.start()}&gt;Talk to assistant&lt;/button&gt;
+&lt;BarVisualizer track={agent.microphoneTrack} state={agent.state} /&gt;
+&lt;RoomAudioRenderer /&gt;   // plays the agent's voice</pre>
+    </article>
+
+    <!-- 2 -->
+    <article class="card">
+      <div class="card-head"><span class="num">2</span><h3>LiveKit room</h3></div>
+      <dl class="facts">
+        <dt>Tech</dt><dd>LiveKit Cloud, a managed real-time media server</dd>
+        <dt>Address</dt><dd><code>wss://your-project.livekit.cloud</code>. Signalling on port 443; audio over WebRTC (UDP, with a TLS 443 fallback)</dd>
+        <dt>Does</dt><dd>Hosts one private room per conversation. Carries your voice to the agent, the agent's voice back, live transcripts and agent state. Sends <code>crm-agent</code> into the room.</dd>
+      </dl>
+      <div class="files"><span class="file">src/crm_api/routes.py → livekit_token()</span><span class="file">.env.local → LIVEKIT_URL / KEY / SECRET</span></div>
+      <p class="note">The CRM API mints the room token. The server picks the room, the identity and the agent, so the browser can't choose another room or agent.</p>
+<pre class="code"># src/crm_api/routes.py (shortened)
+room = f"crm-{secrets.token_hex(4)}"            # a new private room every time
+token = (
+    AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+    .with_grants(VideoGrants(room_join=True, room=room))
+    .with_room_config(RoomConfiguration(
+        agents=[RoomAgentDispatch(agent_name="crm-agent")]))  # send our agent
+    .with_ttl(timedelta(minutes=10))
+)
+return {"server_url": LIVEKIT_URL, "participant_token": token.to_jwt()}</pre>
+    </article>
+
+    <!-- 3 -->
+    <article class="card">
+      <div class="card-head"><span class="num">3</span><h3>Voice agent with Gemini 3.1 Live</h3></div>
+      <dl class="facts">
+        <dt>Tech</dt><dd>Python, LiveKit Agents 1.8, Gemini Live <code>gemini-3.1-flash-live-preview</code> (voice Enceladus), backup <code>gemini-2.5-flash-native-audio-latest</code></dd>
+        <dt>Ports</dt><dd>No inbound port. It connects <em>out</em> to LiveKit (wss :443) and to Google Gemini (wss :443), and calls the CRM API on <code>localhost:8001</code>.</dd>
+        <dt>Does</dt><dd>Listens and speaks in the room, and changes the CRM with 4 tools: <code>lookup_contact</code>, <code>move_deal_stage</code>, <code>create_follow_up</code>, <code>create_lead</code></dd>
+      </dl>
+      <div class="files"><span class="file">src/agent.py</span><span class="file">src/crm_client.py</span></div>
+      <p class="note">If Gemini 3.1 drops the session (error 1011), LiveKit's fallback adapter moves the call to Gemini 2.5 and keeps the conversation.</p>
+<pre class="code"># src/agent.py (shortened)
+session = AgentSession(
+    llm=llm.RealtimeModelFallbackAdapter([
+        gemini_live("gemini-3.1-flash-live-preview", max_retry=0),
+        gemini_live("gemini-2.5-flash-native-audio-latest"),
+    ]),
+)
+
+@function_tool()
+async def move_deal_stage(self, context, contact_name: str, stage: Stage):
+    """Move a contact's deal to another pipeline stage."""
+    contact = await find_contact(contact_name)          # GET /api/contacts?q=
+    deal = pick_deal(contact)
+    return await api("PATCH", f"/api/opportunities/{deal['id']}",
+                     json={"stage": stage})</pre>
+    </article>
+
+    <!-- 4 -->
+    <article class="card">
+      <div class="card-head"><span class="num">4</span><h3>CRM API</h3></div>
+      <dl class="facts">
+        <dt>Tech</dt><dd>Python FastAPI on uvicorn, asyncpg, Pydantic</dd>
+        <dt>Runs at</dt><dd><code>http://localhost:8001</code>, with interactive docs at <code>/docs</code></dd>
+        <dt>Does</dt><dd>Holds all business rules: validates, saves, runs automations, mints LiveKit tokens, receives and sends webhooks. It's the only part that touches the database.</dd>
+      </dl>
+      <div class="files"><span class="file">src/crm_api/routes.py</span><span class="file">src/crm_api/security.py</span><span class="file">src/crm_api/main.py</span></div>
+      <div class="table-wrap">
+        <table>
+          <tr><th>12 endpoints + 1 WebSocket</th><th>Used by</th></tr>
+          <tr><td><code>POST /api/auth/login</code> · <code>logout</code> · <code>GET me</code> · <code>health</code></td><td>website</td></tr>
+          <tr><td><code>GET /api/board</code> · <code>POST /api/livekit/token</code> · <code>WS /ws</code></td><td>website</td></tr>
+          <tr><td><code>GET /api/contacts?q=</code> · <code>POST /api/contacts</code></td><td>website, agent</td></tr>
+          <tr><td><code>PATCH /api/opportunities/{id}</code> · <code>POST /api/tasks</code> · <code>PATCH /api/tasks/{id}</code></td><td>website, agent</td></tr>
+          <tr><td><code>POST /api/webhooks/leads</code></td><td>outside tools (signed)</td></tr>
+        </table>
+      </div>
+<pre class="code"># src/crm_api/security.py: who is calling?
+async def get_actor(conn, x_api_key: str | None = Header(default=None)):
+    if x_api_key is not None:
+        if AGENT_API_KEY and _same(x_api_key, AGENT_API_KEY):
+            return "voice"                 # the voice agent's key
+        raise HTTPException(401, "Invalid API key")
+    if is_logged_in(conn):
+        return "ui"                        # the website's login cookie
+    raise HTTPException(401, "Login required")</pre>
+    </article>
+
+    <!-- 5 -->
+    <article class="card">
+      <div class="card-head"><span class="num">5</span><h3>Automations</h3></div>
+      <dl class="facts">
+        <dt>Tech</dt><dd>Python rules inside the CRM API process, not a separate service</dd>
+        <dt>Runs at</dt><dd>The same process and port as the API (<code>:8001</code>), in the same database transaction as the change</dd>
+        <dt>Does</dt><dd>Reacts to every change, whether from the website, voice or a webhook, and tells the agent what it did</dd>
+      </dl>
+      <div class="files"><span class="file">src/crm_api/automations.py</span></div>
+      <div class="table-wrap">
+        <table>
+          <tr><th>When</th><th>Automatically</th></tr>
+          <tr><td>Deal → Qualified</td><td>task “Prepare proposal”, due in 2 days</td></tr>
+          <tr><td>Deal → Proposal</td><td>task “Chase decision”, due in 3 days</td></tr>
+          <tr><td>Deal → Won</td><td>task “Onboarding kickoff”, and the contact becomes a customer</td></tr>
+          <tr><td>New lead</td><td>task “Intro call”, due tomorrow</td></tr>
+          <tr><td>Any of the above</td><td>signed webhook to <code>WEBHOOK_URL</code> (see 7)</td></tr>
+        </table>
+      </div>
+<pre class="code"># src/crm_api/automations.py
+PLAYBOOK = {
+    "qualified": ("Prepare proposal", 2),    # task title, due in N days
+    "proposal":  ("Chase decision", 3),
+    "won":       ("Onboarding kickoff", 1),
+}
+# called from routes.change_stage() inside the same transaction:
+actions = await automations.after_stage_change(conn, deal=deal, new_stage=new)</pre>
+    </article>
+
+    <!-- 6 -->
+    <article class="card">
+      <div class="card-head"><span class="num">6</span><h3>Database</h3></div>
+      <dl class="facts">
+        <dt>Tech</dt><dd>PostgreSQL 17 (Alpine) in Docker, container <code>crm-postgres</code>, database <code>crm</code>, <code>pg_trgm</code> for fuzzy name matching</dd>
+        <dt>Runs at</dt><dd><code>127.0.0.1:5433</code> on your machine only (5432 inside the container). Data is kept in the Docker volume <code>my-agent_crm_pgdata</code>.</dd>
+        <dt>Tables</dt><dd><code>contacts</code> · <code>opportunities</code> (deals) · <code>tasks</code> · <code>activities</code> (timeline and audit log)</dd>
+      </dl>
+      <div class="files"><span class="file">docker-compose.yml</span><span class="file">db/01_schema.sql</span><span class="file">db/02_seed.sql</span><span class="file">src/crm_api/db.py</span></div>
+<pre class="code">-- db/01_schema.sql (excerpt)
+CREATE TABLE opportunities (
+    id          SERIAL PRIMARY KEY,
+    contact_id  INT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL,
+    value       NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (value &gt;= 0),
+    stage       TEXT NOT NULL DEFAULT 'new'
+                CHECK (stage IN ('new','contacted','qualified','proposal','won','lost'))
+);
+
+# docker-compose.yml
+ports:
+  - "127.0.0.1:5433:5432"     # this machine only</pre>
+    </article>
+
+    <!-- 7 -->
+    <article class="card">
+      <div class="card-head"><span class="num">7</span><h3>Webhooks and live refresh</h3></div>
+      <p class="note">These are two different things. <strong>The page refresh uses a WebSocket</strong>, a connection the browser keeps open to our API. <strong>Webhooks</strong> are how the CRM talks to <em>outside</em> tools like n8n.</p>
+
+      <div class="sub">
+        <h4>Live refresh (WebSocket <code>/ws</code> on :8001, through :5174)</h4>
+        <p class="note">After every saved change, the API sends a small message to every open tab. The tab reloads <code>GET /api/board</code>, shows a toast and highlights the card.</p>
+        <div class="files"><span class="file">src/crm_api/realtime.py</span><span class="file">src/crm_api/main.py → /ws</span><span class="file">web/src/live.tsx</span></div>
+<pre class="code"># API, after the transaction commits (routes.py)
+await hub.broadcast({"type": "crm", "actor": "voice",
+                     "summary": "John Smith: Acme CRM rollout moved from Contacted to Qualified"})
+
+// browser (web/src/live.tsx)
+socket.onmessage = (m) =&gt; { const e = JSON.parse(m.data); if (e.type === "crm") refresh(); };</pre>
+      </div>
+
+      <div class="sub">
+        <h4>Outbound webhooks to n8n (2 events)</h4>
+        <p class="note"><code>opportunity.stage_changed</code> and <code>lead.created</code> are POSTed to <code>WEBHOOK_URL</code>, for example an n8n Webhook node that sends the client an email. They're signed with <code>WEBHOOK_SECRET</code> and sent after the reply, so they never slow the agent down.</p>
+        <div class="files"><span class="file">src/crm_api/automations.py → deliver_webhook()</span><span class="file">.env.local → WEBHOOK_URL</span></div>
+<pre class="code"># src/crm_api/automations.py (shortened)
+headers = {
+    "X-Event": event,                                  # opportunity.stage_changed
+    "X-Timestamp": timestamp,
+    "X-Signature": sign(WEBHOOK_SECRET, timestamp, body),   # sha256=HMAC(...)
+}
+await client.post(WEBHOOK_URL, content=body, headers=headers)</pre>
+      </div>
+
+      <div class="sub">
+        <h4>Inbound webhook (1 endpoint)</h4>
+        <p class="note">Website forms, Zapier or n8n can send new leads to <code>POST /api/webhooks/leads</code>, signed with <code>INBOUND_WEBHOOK_SECRET</code>.</p>
+        <ul class="note">
+          <li>A bad or old signature gets 401.</li>
+          <li>A repeat of the same request gets 409.</li>
+          <li>A body over 10 KB gets 413.</li>
+          <li>A valid lead gets 201, and the Intro call automation runs.</li>
+        </ul>
+        <div class="files"><span class="file">src/crm_api/routes.py → inbound_lead()</span><span class="file">scripts/send_lead.py</span></div>
+      </div>
+    </article>
+
+  </div>
+</section>
+
+<section aria-labelledby="ports">
+  <h2 id="ports">Ports at a glance</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>#</th><th>Component</th><th>Address / port</th><th>Protocol</th><th>Start it with</th></tr>
+      <tr><td>1</td><td>Website CRM</td><td><code>localhost:5174</code></td><td>HTTP</td><td><code>cd web &amp;&amp; npm run dev</code></td></tr>
+      <tr><td>2</td><td>LiveKit room</td><td><code>wss://your-project.livekit.cloud</code> :443</td><td>WebSocket + WebRTC</td><td>managed by LiveKit Cloud</td></tr>
+      <tr><td>3</td><td>Voice agent + Gemini</td><td>outbound only (LiveKit and Google on :443)</td><td>WebSocket</td><td><code>uv run src/agent.py dev</code></td></tr>
+      <tr><td>4</td><td>CRM API</td><td><code>localhost:8001</code></td><td>HTTP + WebSocket</td><td><code>uv run uvicorn crm_api.main:app --reload --port 8001</code></td></tr>
+      <tr><td>5</td><td>Automations</td><td>inside the API (:8001)</td><td>Python calls</td><td>starts with the API</td></tr>
+      <tr><td>6</td><td>PostgreSQL</td><td><code>127.0.0.1:5433</code></td><td>Postgres</td><td><code>docker compose up -d</code></td></tr>
+      <tr><td>7</td><td>Live refresh / webhooks</td><td><code>/ws</code> on :8001 · <code>WEBHOOK_URL</code></td><td>WebSocket · HTTPS</td><td>part of the API</td></tr>
+    </table>
+  </div>
+</section>
+
+</div>
+
+<!-- Draws the diagrams. Needs an internet connection the first time the page opens. -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script>
+  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: dark ? "dark" : "default",
+    fontFamily: '"IBM Plex Sans", "Segoe UI", system-ui, sans-serif',
+    flowchart: { htmlLabels: true, curve: "basis" },
+    sequence: { mirrorActors: false },
+  });
+</script>
+</body>
+</html>
